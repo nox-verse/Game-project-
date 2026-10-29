@@ -6,5 +6,5 @@
 .field-guide .close-modal{position:absolute}.field-guide .catalog-mystery::after{display:none}.mystery-animal::before,.mystery-animal::after{z-index:0}.catalog-mystery:nth-child(2n) .mystery-animal::before,.catalog-mystery:nth-child(2n) .mystery-animal::after{height:26px;top:-16px;width:12px;border-radius:8px}.catalog-mystery:nth-child(3n) .mystery-animal::before,.catalog-mystery:nth-child(3n) .mystery-animal::after{border-radius:3px 9px 2px 2px;transform:rotate(15deg)}
 .scene.editing:not(.placing) .world .decor-slot.empty{display:none}
 .world .collectible{z-index:5}
-.scene.walking-mode .world{cursor:crosshair}.walker-controls button[data-walk-mode][aria-pressed="true"]{background:linear-gradient(#c2d69b,#9cb96e);border-color:#9fb675}.walker-controls button[data-deselect]{font-size:16px;padding:3px 7px;background:#fff3d8;color:#a48a5e;border-color:#cfb789}
+.scene.has-selected-walker .world{cursor:crosshair}.walker-controls button[data-deselect]{font-size:16px;padding:3px 7px;background:#fff3d8;color:#a48a5e;border-color:#cfb789}
 @media(prefers-reduced-motion:reduce){.world .character.walking img{animation:none!important}.world .character{transition:none!important}}
