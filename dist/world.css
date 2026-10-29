@@ -7,4 +7,6 @@
 .scene.editing:not(.placing) .world .decor-slot.empty{display:none}
 .world .collectible{z-index:5}
 .scene.has-selected-walker .world{cursor:crosshair}.walker-controls button[data-deselect]{font-size:16px;padding:3px 7px;background:#fff3d8;color:#a48a5e;border-color:#cfb789}
+.walker-controls kbd{font:11px 'DM Sans',sans-serif;letter-spacing:2px;color:#9b855a;padding:4px 6px;background:#fff8e5;border:1px solid #deca9f;border-radius:6px;white-space:nowrap}.world .character img{scale:var(--sprite-facing,1) 1}.area-transition{position:absolute;inset:0;overflow:hidden;z-index:4;pointer-events:none;background:#e3edc7}.area-transition .world{cursor:default}.scene.is-travelling>.world,.scene.is-travelling .area-exit{pointer-events:none}.scene.is-travelling::after{content:attr(data-transition-to);position:absolute;left:50%;top:76px;transform:translateX(-50%);z-index:7;pointer-events:none;font:13px 'Jua',sans-serif;white-space:nowrap;color:#94764d;background:#fff8e4e8;border:1.5px solid #c9af7c;border-radius:15px;padding:9px 16px;box-shadow:0 2px 4px #53653f22}
+@media(max-width:700px){.walker-controls kbd{font-size:9px;letter-spacing:1px;padding:3px 4px}.scene.is-travelling::after{top:66px;font-size:11px;padding:8px 12px}}
 @media(prefers-reduced-motion:reduce){.world .character.walking img{animation:none!important}.world .character{transition:none!important}}

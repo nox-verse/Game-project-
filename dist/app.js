@@ -86,6 +86,9 @@ let state=FRESH(),saveAvailable=true,recovery=false;
 try{const raw=localStorage.getItem(KEY);if(raw)state=validate(JSON.parse(raw));}catch(e){saveAvailable=false;recovery=true;}
 let view='forest',category='friends',selectedKind=null,movingSlot=null,activeFox=null,soundOn=false,audio=null,audioTimer=null;
 let selectedWalker=null,travelling=false,walkTimers={},camera={zoom:1,x:0,y:0},drag=null,suppressGroundClick=false;
+const movementKeys=new Set(),areaImages=new Map();
+let keyboardFrame=0,keyboardLastTime=0,keyboardDirty=false,keyboardSaveTime=0;
+let followFrame=0,followLastTime=0,travelVersion=0,travelAnimations=[];
 const escapeHTML=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 function persist(){try{localStorage.setItem(KEY,JSON.stringify(state));saveAvailable=true;$('#save-status').innerHTML='<i></i>자동 저장됨';$('#save-status').classList.remove('save-warning');}catch{saveAvailable=false;$('#save-status').textContent='저장 공간 확인 필요';$('#save-status').classList.add('save-warning');}}
 function log(text,type='leaf'){state.journal.unshift({text,time:Date.now(),icon:type});state.journal=state.journal.slice(0,80);}
@@ -101,6 +104,141 @@ const currentArea=()=>state.currentArea||'home';
 const localDecor=()=>state.placed.filter(p=>(p.area||'home')===currentArea());
 const harvestFor=(area=currentArea())=>area==='home'?state.harvested:(state.areaHarvested[area]??={});
 function isGround(area,x,y){return x>=10&&x<=90&&y>=41&&y<=89&&!(area==='home'&&x>77&&y>69)&&!(area==='home'&&x>69&&y<49)&&!(area==='pond'&&x>72&&y>62);}
+// Movement uses elapsed time, with normalized diagonals and the map's aspect ratio.
+function movementDirection(keys){
+ const x=Number(keys.has('ArrowRight'))-Number(keys.has('ArrowLeft'));
+ const y=Number(keys.has('ArrowDown'))-Number(keys.has('ArrowUp'));
+ const length=Math.hypot(x,y)||1;return {x:x/length,y:y/length};
+}
+function movementStep(position,direction,seconds,aspect=1){
+ const distance=18*Math.min(.05,Math.max(0,seconds));
+ let x=Math.max(10,Math.min(90,position.x+direction.x*distance));
+ let y=Math.max(41,Math.min(89,position.y+direction.y*distance*aspect));
+ if(!isGround(position.area,x,position.y))x=position.x;
+ if(!isGround(position.area,x,y))y=position.y;
+ return {x,y};
+}
+function boundaryDestination(area,position,direction){
+ const order=Object.keys(AREAS),index=order.indexOf(area);
+ if(direction.x<0&&position.x<=10.75)return order[index-1]||null;
+ if(direction.x>0&&position.x>=89.25)return order[index+1]||null;
+ return null;
+}
+function entrancePosition(area,direction,previousY){
+ const x=direction>0?14:86,preferred=Math.max(44,Math.min(86,previousY));
+ const y=[preferred,58,52,64,80].find(value=>isGround(area,x,value));
+ return {area,x,y:y??58};
+}
+function stopCharacterMotion(id){
+ const el=id&&$(`[data-walker="${id}"]`);if(!el)return;
+ const wasMoving=!!walkTimers[id];
+ if(walkTimers[id]){
+  const computed=getComputedStyle(el),world=$('#world');
+  state.characterLocations[id].x=parseFloat(computed.left)/world.offsetWidth*100;
+  state.characterLocations[id].y=parseFloat(computed.top)/world.offsetHeight*100;
+  clearTimeout(walkTimers[id]);delete walkTimers[id];
+ }
+ const p=state.characterLocations[id];
+ el.style.setProperty('--walk-duration','0ms');el.style.left=p.x+'%';el.style.top=p.y+'%';
+ el.classList.remove('walking');
+ if(followFrame)cancelAnimationFrame(followFrame);followFrame=0;followLastTime=0;
+ return wasMoving;
+}
+function stopKeyboardMovement(){
+ movementKeys.clear();if(keyboardFrame)cancelAnimationFrame(keyboardFrame);
+ keyboardFrame=0;keyboardLastTime=0;
+ if(selectedWalker&&!walkTimers[selectedWalker])$(`[data-walker="${selectedWalker}"]`)?.classList.remove('walking');
+ if(keyboardDirty){keyboardDirty=false;persist();}
+}
+function keyboardMovementAllowed(){
+ return !!selectedWalker&&view!=='decorate'&&!$('#dialog').open&&!document.hidden;
+}
+function runKeyboardMovement(time){
+ keyboardFrame=0;
+ if(!keyboardMovementAllowed()||!movementKeys.size){stopKeyboardMovement();return;}
+ const seconds=keyboardLastTime?Math.min(.05,(time-keyboardLastTime)/1000):1/60;
+ keyboardLastTime=time;
+ if(!travelling){
+  const direction=movementDirection(movementKeys),p=state.characterLocations[selectedWalker];
+  const world=$('#world'),next=movementStep(p,direction,seconds,world.offsetWidth/world.offsetHeight);
+  const el=$(`[data-walker="${selectedWalker}"]`),moving=next.x!==p.x||next.y!==p.y;
+  if(el){
+   el.style.setProperty('--walk-duration','0ms');
+   el.classList.toggle('walking',moving);
+   if(direction.x)el.style.setProperty('--sprite-facing',direction.x<0?-1:1);
+   if(moving){p.x=next.x;p.y=next.y;el.style.left=p.x+'%';el.style.top=p.y+'%';keyboardDirty=true;}
+  }
+  followCharacterCamera(p,seconds);
+  if(keyboardDirty&&time-keyboardSaveTime>600){keyboardSaveTime=time;keyboardDirty=false;persist();}
+  const destination=boundaryDestination(p.area,p,direction);
+  if(destination)travelTo(destination,{continuous:true});
+ }
+ if(movementKeys.size)keyboardFrame=requestAnimationFrame(runKeyboardMovement);
+}
+function startKeyboardMovement(){if(!keyboardFrame){keyboardLastTime=0;keyboardFrame=requestAnimationFrame(runKeyboardMovement);}}
+function followCharacterCamera(position,seconds,immediate=false){
+ if(drag||!position)return;
+ const scene=$('#scene'),world=$('#world'),width=scene.clientWidth,height=scene.clientHeight;
+ const actorX=position.x/100*world.offsetWidth*camera.zoom;
+ const actorY=position.y/100*world.offsetHeight*camera.zoom;
+ let targetX=camera.x,targetY=camera.y;
+ if(immediate){targetX=width*.5-actorX;targetY=height*.65-actorY;}
+ else{
+  if(actorX+camera.x<width*.3)targetX=width*.3-actorX;
+  if(actorX+camera.x>width*.7)targetX=width*.7-actorX;
+  if(actorY+camera.y<height*.42)targetY=height*.42-actorY;
+  if(actorY+camera.y>height*.76)targetY=height*.76-actorY;
+ }
+ const blend=immediate?1:1-Math.exp(-9*Math.max(0,seconds));
+ camera.x+=(targetX-camera.x)*blend;camera.y+=(targetY-camera.y)*blend;applyCamera();
+}
+function trackWalkingCamera(time){
+ followFrame=0;
+ if(!selectedWalker||travelling&&$('#scene').classList.contains('is-travelling'))return;
+ const el=$(`[data-walker="${selectedWalker}"]`),world=$('#world');
+ if(!el)return;
+ const computed=getComputedStyle(el),seconds=followLastTime?Math.min(.05,(time-followLastTime)/1000):1/60;
+ followLastTime=time;
+ followCharacterCamera({x:parseFloat(computed.left)/world.offsetWidth*100,y:parseFloat(computed.top)/world.offsetHeight*100},seconds);
+ if(walkTimers[selectedWalker])followFrame=requestAnimationFrame(trackWalkingCamera);
+}
+function preloadArea(area){
+ if(!areaImages.has(area)){
+  const image=new Image();image.src=AREAS[area].image;
+  const ready=image.decode().then(()=>image);
+  areaImages.set(area,ready);ready.catch(()=>areaImages.delete(area));
+ }
+ return areaImages.get(area);
+}
+function cancelAreaTransition(){
+ travelVersion++;travelAnimations.forEach(animation=>animation.cancel());travelAnimations=[];
+ $$('.area-transition').forEach(el=>el.remove());$('#scene').classList.remove('is-travelling');travelling=false;
+}
+async function transitionArea(area,id,direction,{continuous=false}={}){
+ const version=++travelVersion;travelling=true;
+ const scene=$('#scene');scene.dataset.transitionTo=AREAS[area].name+'(으)로 산책 중';scene.classList.add('is-travelling');
+ try{await preloadArea(area);}catch{if(version===travelVersion){travelling=false;scene.classList.remove('is-travelling');stopKeyboardMovement();toast('숲 배경을 불러오지 못했어요. 다시 이동해 주세요.',true);}return;}
+ if(version!==travelVersion)return;
+ const world=$('#world'),snapshot=document.createElement('div');
+ snapshot.className='area-transition';snapshot.setAttribute('aria-hidden','true');snapshot.inert=true;
+ const oldWorld=world.cloneNode(true);oldWorld.removeAttribute('id');
+ $$('[id]',oldWorld).forEach(el=>el.removeAttribute('id'));
+ $$('[data-walker],[data-collect],[data-slot]',oldWorld).forEach(el=>{el.removeAttribute('data-walker');el.removeAttribute('data-collect');el.removeAttribute('data-slot');});
+ snapshot.append(oldWorld);scene.append(snapshot);scene.classList.add('is-travelling');
+ scene.dataset.transitionTo=AREAS[area].name+'(으)로 산책 중';
+ const previousCamera={...camera},previousY=id?state.characterLocations[id].y:60;
+ if(id)state.characterLocations[id]=entrancePosition(area,direction,previousY);
+ enterArea(area);camera=previousCamera;
+ if(id)followCharacterCamera(state.characterLocations[id],0,true);else applyCamera();
+ const reduced=window.matchMedia('(prefers-reduced-motion: reduce)').matches,duration=reduced?80:460;
+ travelAnimations=[snapshot.animate([{opacity:1,transform:'translateX(0)'},{opacity:0,transform:`translateX(${reduced?0:-direction*45}px)`}],{duration,easing:'ease-in-out'}),world.animate([{opacity:.2},{opacity:1}],{duration,easing:'ease-in-out'})];
+ await Promise.allSettled(travelAnimations.map(animation=>animation.finished));
+ if(version!==travelVersion)return;
+ travelAnimations=[];snapshot.remove();scene.classList.remove('is-travelling');travelling=false;
+ if(id){log(`${FOXES[id].name}와 ${AREAS[area].name}(으)로 산책을 갔다.`,'leaf');persist();}
+ if(movementKeys.size&&id)startKeyboardMovement();
+ else if(id&&!continuous)walkTo(id,...arrivalSpot(area,id));
+}
 function randomNodePosition(area,index,positions){
  const previous=positions[index];let fallback=null;
  for(let attempt=0;attempt<800;attempt++){
@@ -120,22 +258,42 @@ function respawnNodes(now=Date.now()){let changed=false;for(const area of Object
 function renderNodes(){const now=Date.now(),positions=ensureNodes(),harvested=harvestFor();$('#collectibles').innerHTML=NODES.map(([kind],i)=>{const [x,y]=positions[i];return `<button class="collectible ${harvested[i]>now?'gathered':''}" data-collect="${i}" style="left:${x}%;top:${y}%" aria-label="${ITEMS[kind].name} 수집" ${harvested[i]>now?'disabled':''}>${ITEMS[kind].art}</button>`;}).join('');}
 const animalImage=id=>['red','arctic','tibetan'].includes(id)?`assets/characters-v2/${id}.png`:`assets/animals/${id}.png`;
 function renderCharacters(){const locals=Object.keys(FOXES).filter(id=>state.characterLocations[id].area===currentArea());if(selectedWalker&&!locals.includes(selectedWalker))selectedWalker=null;$('#characters').innerHTML=locals.map(id=>{const f=FOXES[id],p=state.characterLocations[id];return `<button class="character ${id} ${selectedWalker===id?'is-selected':''}" style="left:${p.x}%;top:${p.y}%" data-walker="${id}" aria-label="${f.name} 선택" aria-pressed="${selectedWalker===id}"><span class="speech">${f.speech}</span><img src="${animalImage(id)}" alt="${f.name}" draggable="false"><span class="character-tag">${f.name}<span>♡</span></span></button>`;}).join('');renderWalkerControls();}
-function renderWalkerControls(){$('#walker-controls').innerHTML=selectedWalker?`<span>${FOXES[selectedWalker].name} · 배경을 눌러 이동</span><button data-fox="${selectedWalker}">대화</button><button data-deselect="true" aria-label="캐릭터 선택 해제">×</button>`:'아이템을 눌러 수집해요';$('#scene').classList.toggle('has-selected-walker',selectedWalker!==null);}
-function selectWalker(id){if(travelling)return;if(selectedWalker===id){clearWalkerSelection();return;}selectedWalker=id;if(!state.met.includes(id)){state.met.push(id);log(`${AREAS[currentArea()].name}에서 ${FOXES[id].name}와 처음 인사를 나누었다.`,'heart');persist();renderSidebar();}$$('[data-walker]').forEach(el=>{el.classList.toggle('is-selected',el.dataset.walker===id);el.setAttribute('aria-pressed',el.dataset.walker===id?'true':'false');});renderWalkerControls();toast(`${FOXES[id].name} 선택 · 배경을 눌러 이동 · 다시 누르면 선택 해제`);}
-function clearWalkerSelection(){if(selectedWalker){const id=selectedWalker,el=$(`[data-walker="${id}"]`);if(el&&walkTimers[id]){const computed=getComputedStyle(el),world=$('#world');const x=parseFloat(computed.left)/world.offsetWidth*100,y=parseFloat(computed.top)/world.offsetHeight*100;clearTimeout(walkTimers[id]);delete walkTimers[id];el.style.setProperty('--walk-duration','0ms');el.style.left=x+'%';el.style.top=y+'%';el.classList.remove('walking');state.characterLocations[id].x=x;state.characterLocations[id].y=y;persist();}travelling=false;}selectedWalker=null;$$('[data-walker]').forEach(el=>{el.classList.remove('is-selected');el.setAttribute('aria-pressed','false');});renderWalkerControls();}
-function walkTo(id,x,y,arrival){const p=state.characterLocations[id],el=$(`[data-walker="${id}"]`);if(!p||!el)return;clearTimeout(walkTimers[id]);const duration=Math.max(450,Math.min(2500,Math.hypot(p.x-x,p.y-y)*35));p.x=x;p.y=y;el.classList.add('walking');el.style.setProperty('--walk-duration',duration+'ms');el.style.transition=`left ${duration}ms linear, top ${duration}ms linear`;el.style.left=x+'%';el.style.top=y+'%';persist();walkTimers[id]=setTimeout(()=>{delete walkTimers[id];el.classList.remove('walking');arrival?.();},duration);}
+function renderWalkerControls(){$('#walker-controls').innerHTML=selectedWalker?`<span>${FOXES[selectedWalker].name}</span><kbd aria-label="방향키로 이동">← ↑ ↓ →</kbd><button data-fox="${selectedWalker}">대화</button><button data-deselect="true" aria-label="캐릭터 선택 해제">×</button>`:'동물을 선택하면 방향키로 산책할 수 있어요';$('#scene').classList.toggle('has-selected-walker',selectedWalker!==null);}
+function selectWalker(id){if(travelling)return;if(selectedWalker===id){clearWalkerSelection();return;}stopKeyboardMovement();if(selectedWalker&&stopCharacterMotion(selectedWalker))persist();selectedWalker=id;if(!state.met.includes(id)){state.met.push(id);log(`${AREAS[currentArea()].name}에서 ${FOXES[id].name}와 처음 인사를 나누었다.`,'heart');persist();renderSidebar();}$$('[data-walker]').forEach(el=>{el.classList.toggle('is-selected',el.dataset.walker===id);el.setAttribute('aria-pressed',el.dataset.walker===id?'true':'false');});renderWalkerControls();toast(`${FOXES[id].name} 선택 · 방향키 또는 배경 클릭으로 이동`);}
+function clearWalkerSelection(){stopKeyboardMovement();if(selectedWalker&&stopCharacterMotion(selectedWalker))persist();cancelAreaTransition();selectedWalker=null;$$('[data-walker]').forEach(el=>{el.classList.remove('is-selected');el.setAttribute('aria-pressed','false');});renderWalkerControls();}
+function walkTo(id,x,y,arrival){
+ const p=state.characterLocations[id],el=$(`[data-walker="${id}"]`);if(!p||!el)return;
+ stopKeyboardMovement();stopCharacterMotion(id);
+ const duration=Math.max(450,Math.min(2500,Math.hypot(p.x-x,p.y-y)*35));
+ if(x!==p.x)el.style.setProperty('--sprite-facing',x<p.x?-1:1);
+ p.x=x;p.y=y;el.classList.add('walking');el.style.setProperty('--walk-duration',duration+'ms');
+ el.style.left=x+'%';el.style.top=y+'%';persist();
+ walkTimers[id]=setTimeout(()=>{delete walkTimers[id];el.classList.remove('walking');arrival?.();},duration);
+ if(selectedWalker===id&&!followFrame){followLastTime=0;followFrame=requestAnimationFrame(trackWalkingCamera);}
+}
 function enterArea(area){state.currentArea=area;ensureNodes(area);renderWorld();persist();render();renderCharacters();}
 function arrivalSpot(area,id){return [[48,55],[25,78],[50,84],[80,58],[18,52]].find(([x,y])=>isGround(area,x,y)&&!Object.entries(state.characterLocations).some(([other,p])=>other!==id&&p.area===area&&Math.abs(p.x-x)<13&&Math.abs(p.y-y)<18))||[50,86];}
-function stopAllWalks(){Object.values(walkTimers).forEach(clearTimeout);walkTimers={};travelling=false;selectedWalker=null;}
-function travelTo(area){if(!AREAS[area]||area===currentArea()||travelling)return;if(view==='decorate')switchView('forest');const id=selectedWalker,from=currentArea(),forward=Object.keys(AREAS).indexOf(area)>Object.keys(AREAS).indexOf(from);if(id&&state.characterLocations[id].area===from){travelling=true;toast(`${FOXES[id].name}와 ${AREAS[area].name}(으)로 걸어가요`);walkTo(id,forward?88:12,58,()=>{state.characterLocations[id]={area,x:forward?15:85,y:60};travelling=false;enterArea(area);walkTo(id,...arrivalSpot(area,id));log(`${FOXES[id].name}와 ${AREAS[area].name}(으)로 산책을 갔다.`,'leaf');persist();});}else enterArea(area);}
+function stopAllWalks(){stopKeyboardMovement();Object.keys(walkTimers).forEach(stopCharacterMotion);walkTimers={};cancelAreaTransition();selectedWalker=null;}
+function travelTo(area,{continuous=false}={}){
+ if(!AREAS[area]||area===currentArea()||travelling)return;
+ if(view==='decorate')switchView('forest');
+ const id=selectedWalker,from=currentArea(),direction=Object.keys(AREAS).indexOf(area)>Object.keys(AREAS).indexOf(from)?1:-1;
+ if(continuous)return transitionArea(area,id,direction,{continuous:true});
+ stopKeyboardMovement();
+ if(id&&state.characterLocations[id].area===from){
+  travelling=true;const edge=direction>0?89.4:10.6,p=state.characterLocations[id];
+  const y=isGround(from,edge,p.y)?p.y:58;
+  walkTo(id,edge,y,()=>transitionArea(area,id,direction));
+ }else transitionArea(area,null,direction);
+}
 function renderWorld(){const area=currentArea();$('.forest-background').src=AREAS[area].image;$('.forest-background').alt=AREAS[area].description;$('#area-title').innerHTML=AREAS[area].name+`<small>${AREAS[area].description}</small>`;$('#world-map').innerHTML='<small>숲 지도 · 친구들과 산책해요</small><div>'+Object.entries(AREAS).map(([id,a])=>`<button data-travel="${id}" class="${id===area?'active':''}">${a.name}</button>`).join('')+'</div>';const keys=Object.keys(AREAS),i=keys.indexOf(area);$('#area-navigation').innerHTML=(i>0?`<button class="area-exit prev" data-travel="${keys[i-1]}" aria-label="${AREAS[keys[i-1]].name}(으)로 이동">‹<small>${AREAS[keys[i-1]].name}</small></button>`:'')+(i<keys.length-1?`<button class="area-exit next" data-travel="${keys[i+1]}" aria-label="${AREAS[keys[i+1]].name}(으)로 이동">›<small>${AREAS[keys[i+1]].name}</small></button>`:'');resetCamera();}
 function applyCamera(){const scene=$('#scene');const min=1/1.4;camera.zoom=Math.max(min,Math.min(1.4,camera.zoom));camera.x=Math.max(scene.clientWidth-scene.clientWidth*1.4*camera.zoom,Math.min(0,camera.x));camera.y=Math.max(scene.clientHeight-scene.clientHeight*1.4*camera.zoom,Math.min(0,camera.y));$('#world').style.transform=`translate(${camera.x}px,${camera.y}px) scale(${camera.zoom})`;$('#camera-percent').textContent=Math.round(camera.zoom*100)+'%';}
 function resetCamera(fit=false){const zoom=fit?1/1.4:.8;camera={zoom,x:-$('#scene').clientWidth*(1.4*zoom-1),y:-$('#scene').clientHeight*(1.4*zoom-1)/2};applyCamera();}
 function zoomCamera(direction){if(direction==='reset'){resetCamera(true);return;}const old=camera.zoom;camera.zoom=Math.max(1/1.4,Math.min(1.4,old+(direction==='in'?.12:-.12)));const r=camera.zoom/old;camera.x=(camera.x-$('#scene').clientWidth/2)*r+$('#scene').clientWidth/2;camera.y=(camera.y-$('#scene').clientHeight/2)*r+$('#scene').clientHeight/2;applyCamera();}
-function renderDecor(){const edit=view==='decorate';$('#scene').classList.toggle('editing',edit);document.querySelector("#scene").classList.toggle('placing',edit&&(selectedKind!==null||movingSlot!==null));$('#decoration-layer').innerHTML=SLOTS.map(([x,y],i)=>{const placed=localDecor().find(p=>p.slot===i);if(!placed&&!isGround(currentArea(),x,y))return '';return `<button class="decor-slot ${placed?'occupied':'empty'} ${movingSlot===i?'selected':''}" style="left:${x}%;top:${y}%" data-slot="${i}" ${!edit?'disabled':''} aria-label="${placed?DECOR[placed.kind].name+(edit?' 이동 또는 회수':''):i+1+'번 빈 배치 자리'}">${placed?DECOR[placed.kind].art:'+'}</button>`;}).join('');$('#scene-instruction').hidden=!edit;$('#scene-instruction').textContent=movingSlot!==null?'옮길 빈자리를 눌러주세요':selectedKind?DECOR[selectedKind].name+' · 빈자리를 눌러 배치해요':'아래에서 장식을 제작하고 선택해요';$('#mode-label').textContent=edit?'숲 꾸미는 중':'숲 산책 중';$('#mode-hint').textContent=edit?'장식을 누르면 이동하거나 회수할 수 있어요':'캐릭터 선택 후 배경 클릭으로 이동 · 캐릭터 다시 클릭으로 선택 해제';$('#decorate-toggle').innerHTML=(edit?'꾸미기 마치기':'숲 꾸미기')+icon('arrow');}
+function renderDecor(){const edit=view==='decorate';$('#scene').classList.toggle('editing',edit);document.querySelector("#scene").classList.toggle('placing',edit&&(selectedKind!==null||movingSlot!==null));$('#decoration-layer').innerHTML=SLOTS.map(([x,y],i)=>{const placed=localDecor().find(p=>p.slot===i);if(!placed&&!isGround(currentArea(),x,y))return '';return `<button class="decor-slot ${placed?'occupied':'empty'} ${movingSlot===i?'selected':''}" style="left:${x}%;top:${y}%" data-slot="${i}" ${!edit?'disabled':''} aria-label="${placed?DECOR[placed.kind].name+(edit?' 이동 또는 회수':''):i+1+'번 빈 배치 자리'}">${placed?DECOR[placed.kind].art:'+'}</button>`;}).join('');$('#scene-instruction').hidden=!edit;$('#scene-instruction').textContent=movingSlot!==null?'옮길 빈자리를 눌러주세요':selectedKind?DECOR[selectedKind].name+' · 빈자리를 눌러 배치해요':'아래에서 장식을 제작하고 선택해요';$('#mode-label').textContent=edit?'숲 꾸미는 중':'숲 산책 중';$('#mode-hint').textContent=edit?'장식을 누르면 이동하거나 회수할 수 있어요':'방향키·배경 클릭으로 이동 · 좌우 경계에서 다음 숲으로';$('#decorate-toggle').innerHTML=(edit?'꾸미기 마치기':'숲 꾸미기')+icon('arrow');}
 function renderWorkbench(){const root=$('#workbench');root.hidden=view!=='decorate';if(view!=='decorate')return;root.innerHTML=`<div class="workbench-heading"><h2>숲을 채우는 작은 것들</h2><p>재료를 모아 제작한 뒤, 숲의 + 자리에 놓아보세요.</p></div><div class="decor-grid">${Object.entries(DECOR).map(([k,d])=>`<article class="decor-card ${selectedKind===k?'chosen':''}">${d.art}<h3>${d.name}</h3><div class="recipe" aria-label="필요 재료">${costHTML(d.cost)}</div><div class="owned-count">보관 ${state.stock[k]}개 · 배치 ${state.placed.filter(p=>p.kind===k).length}개</div><button class="craft" data-craft="${k}" ${!canCraft(k)?'disabled':''}>${state.unlocked.includes(k)?'추가 제작':'제작하기'}</button><button data-select="${k}" ${!state.stock[k]?'disabled':''}>${selectedKind===k?'선택됨':'배치'}</button></article>`).join('')}</div>`;}
 const goals=()=>[{label:'숲의 선물 3개 모으기',done:state.stats.collected>=3,count:`${Math.min(3,state.stats.collected)}/3`},{label:'친구 세 마리에게 인사하기',done:state.met.length>=3,count:`${Math.min(3,state.met.length)}/3`},{label:'마음을 담아 선물하기',done:state.stats.gifts>0,count:''},{label:'나만의 장식 놓아보기',done:state.stats.placed>0,count:''}];
-function friendsCard(){return `<section class="side-card friends-list"><span class="eyebrow">OUR FOREST FRIENDS</span><div class="side-heading"><h2>숲의 친구들</h2><span>${state.met.length}마리 만남</span></div><div class="friends-scroll">${Object.entries(FOXES).map(([id,f])=>{const known=state.met.includes(id),place=state.characterLocations[id].area;return `<button class="friend-row ${known?'':'unmet'}" ${known||place===currentArea()?`data-fox="${id}"`:`data-travel="${place}"`}><span class="friend-portrait ${id}"><img src="${animalImage(id)}" alt="${known||place===currentArea()?f.name:'미발견 친구'}"></span><span class="friend-details"><span class="friend-name">${known||place===currentArea()?f.name:'아직 만나지 못한 친구'}<span>♡ ${state.affection[id]}</span></span><small>${AREAS[place].name} · ${known?affinityLabel(state.affection[id]):'이곳에서 만나요'}</small><span class="meter"><span style="width:${state.affection[id]}%"></span></span></span></button>`;}).join('')}</div><p class="card-footnote">친구 선택 후 배경을 눌러 산책해요.</p></section>`;}
+function friendsCard(){return `<section class="side-card friends-list"><span class="eyebrow">OUR FOREST FRIENDS</span><div class="side-heading"><h2>숲의 친구들</h2><span>${state.met.length}마리 만남</span></div><div class="friends-scroll">${Object.entries(FOXES).map(([id,f])=>{const known=state.met.includes(id),place=state.characterLocations[id].area;return `<button class="friend-row ${known?'':'unmet'}" ${known||place===currentArea()?`data-fox="${id}"`:`data-travel="${place}"`}><span class="friend-portrait ${id}"><img src="${animalImage(id)}" alt="${known||place===currentArea()?f.name:'미발견 친구'}"></span><span class="friend-details"><span class="friend-name">${known||place===currentArea()?f.name:'아직 만나지 못한 친구'}<span>♡ ${state.affection[id]}</span></span><small>${AREAS[place].name} · ${known?affinityLabel(state.affection[id]):'이곳에서 만나요'}</small><span class="meter"><span style="width:${state.affection[id]}%"></span></span></span></button>`;}).join('')}</div><p class="card-footnote">친구를 선택하고 방향키로 함께 산책해요.</p></section>`;}
 function goalsCard(){const list=goals();return `<section class="side-card goals-card"><span class="eyebrow">LITTLE MOMENTS, BIG JOY</span><div class="side-heading"><h2>오늘의 작은 발자국</h2><span>${list.filter(g=>g.done).length} / 4</span></div>${list.map(g=>`<div class="goal ${g.done?'done':''}"><span class="goal-check">${g.done?'✓':''}</span><span>${g.label}</span>${g.count?`<small>${g.count}</small>`:''}</div>`).join('')}<div class="goals-footer">${icon('leaf')}${list.every(g=>g.done)?'첫 숲 산책을 완성했어요. 참 잘했어요!':'하나씩, 나의 속도로 해도 괜찮아요.'}</div></section>`;}
 function journalCard(){return `<section class="side-card journal-card"><span class="eyebrow">DEAR, MY FOREST</span><div class="side-heading"><h2>숲에 남긴 이야기</h2><span>${state.journal.length}개의 기록</span></div>${journalEntries(5)}<button class="text-button" data-action="full-journal">일기장 펼치기 ${icon('arrow')}</button></section>`;}
 function journalEntries(limit=80){return `<div class="journal-list">${state.journal.length?state.journal.slice(0,limit).map(e=>`<article class="journal-entry"><span>${icon(e.icon)}</span><div><time>${new Date(e.time).toLocaleString('ko-KR',{month:'long',day:'numeric',hour:'2-digit',minute:'2-digit'})}</time><p>${escapeHTML(e.text)}</p></div></article>`).join(''):'<div class="journal-empty">아직은 하얀 일기장이에요.<br>숲에서의 첫 추억을 남겨볼까요?</div>'}</div>`;}
@@ -149,10 +307,10 @@ function catalog(){const group=category==='friends'?FOXES:category==='items'?ITE
 function openBook(){openModal(`<section class="modal field-guide">${closeButton()}<div class="book-rings" aria-hidden="true"></div><h2 class="sr-only">나의 숲 도감</h2>${catalog()}</section>`);}
 function render(){respawnNodes();renderResources();renderNodes();renderDecor();renderWorkbench();renderSidebar();}
 const viewCopy={forest:['어서 와요, 나의 작은 숲에','서두르지 않아도 괜찮아요. 오늘은 어떤 작은 추억을 만나게 될까요?'],friends:['곁에 있으면, 마음이 포근해져요','작은 인사와 다정한 선물로 숲의 친구들과 가까워져요.'],decorate:['작은 손길로, 더 아늑한 숲','숲이 건네준 선물로 나만의 공간을 하나씩 채워보세요.'],collection:['우리가 만난, 소중한 것들','처음 만난 친구도, 작은 잎사귀도. 하나하나 숲의 이야기가 됩니다.'],journal:['오늘도 한 페이지, 우리의 이야기','당신이 남긴 작은 관심들을 숲은 오래오래 기억할 거예요.']};
-function switchView(next){if(!viewCopy[next])return;view=next;selectedKind=null;movingSlot=null;$$('#main-nav [data-view]').forEach(b=>{b.classList.toggle('active',b.dataset.view===view);b.setAttribute('aria-current',b.dataset.view===view?'page':'false');});$('#page-title').innerHTML=viewCopy[view][0]+` <span class="heading-leaf">${icon('leaf')}</span>`;$('#page-description').textContent=viewCopy[view][1];$('#scene-caption').textContent=view==='decorate'?'배경을 드래그해 둘러보고, 빈자리에 장식을 놓아요':'캐릭터 선택 후 배경 클릭으로 이동 · 캐릭터 다시 클릭으로 선택 해제 · 드래그로 둘러보기';render();if(view==='collection')openBook();}
+function switchView(next){if(!viewCopy[next])return;stopKeyboardMovement();if(selectedWalker&&stopCharacterMotion(selectedWalker))persist();view=next;selectedKind=null;movingSlot=null;$$('#main-nav [data-view]').forEach(b=>{b.classList.toggle('active',b.dataset.view===view);b.setAttribute('aria-current',b.dataset.view===view?'page':'false');});$('#page-title').innerHTML=viewCopy[view][0]+` <span class="heading-leaf">${icon('leaf')}</span>`;$('#page-description').textContent=viewCopy[view][1];$('#scene-caption').textContent=view==='decorate'?'배경을 드래그해 둘러보고, 빈자리에 장식을 놓아요':'방향키·배경 클릭으로 이동 · 좌우 경계에서 다음 숲으로 · 드래그로 둘러보기';render();if(view==='collection')openBook();}
 function collect(index){const node=NODES[index],harvested=harvestFor();if(!node||view==='decorate'||travelling||harvested[index]>Date.now())return;const [kind]=node,[x,y]=ensureNodes()[index];state.inventory[kind]++;state.stats.collected++;harvested[index]=Date.now()+12000;if(!state.foundItems.includes(kind)){state.foundItems.push(kind);log(`${ITEMS[kind].name}을 처음 발견했다. 작은 주머니에 소중히 담았다.`);toast(`${ITEMS[kind].name} 발견! 도감에 기록했어요`);}else toast(`${ITEMS[kind].name} +1 · 주머니에 담았어요`);particle(x,y,`${ITEMS[kind].name} +1`);chime();if(state.stats.collected===3)remember('first-collection','숲의 선물 세 개를 모았다. 내 작은 숲의 첫 수확이다.');persist();render();}
 function closeModal(){const d=$('#dialog');d.close();activeFox=null;}
-function openModal(content){$('#dialog-content').innerHTML=content;hydrate($('#dialog-content'));if(!$('#dialog').open)$('#dialog').showModal();}
+function openModal(content){stopKeyboardMovement();if(selectedWalker&&stopCharacterMotion(selectedWalker))persist();if(travelling)cancelAreaTransition();$('#dialog-content').innerHTML=content;hydrate($('#dialog-content'));if(!$('#dialog').open)$('#dialog').showModal();}
 const closeButton=()=>`<button class="close-modal icon-button" data-action="close" aria-label="닫기">${icon('close')}</button>`;
 function openFox(id,override){if(!FOXES[id])return;activeFox=id;const fox=FOXES[id];if(!state.met.includes(id)){state.met.push(id);log(`${fox.name}와 처음 인사를 나누었다. ${fox.personality}.`,'heart');if(state.met.length===3)remember('all-friends','숲의 친구 세 마리를 만났다. 숲이 조금 더 다정해졌다.','heart');persist();renderSidebar();}const n=state.affection[id];const text=override??(n>=100?fox.best:n>=25?fox.close:fox.intro);const hearts=Array.from({length:5},(_,i)=>`<span class="${n>=(i+1)*20?'filled':'empty'}">${n>=(i+1)*20?'♥':'♡'}</span>`).join('');openModal(`<section class="modal friend-modal ${id}">${closeButton()}<div class="friend-title-panel"><span class="eyebrow">우리 숲의 소중한 친구</span><h2>${fox.name}</h2></div><div class="friend-scene-pane"><span class="portrait-sparkle" aria-hidden="true">✧</span><img src="${animalImage(id)}" alt="${fox.name}"></div><div class="friend-story-pane"><div class="personality">${fox.personality}</div><div class="affection-hearts"><span class="hearts" aria-label="친밀도 하트 ${Math.floor(n/20)}개">${hearts}</span><span>${n} / 100</span></div><div class="meter"><span style="width:${n}%"></span></div><div class="affection-label"><span>${affinityLabel(n)}</span><span>함께한 만큼 자라는 마음</span></div><div class="dialogue-box" id="dialogue-box">“${text}”</div><div class="friend-buttons"><button class="primary-button" data-gift-menu="${id}">${icon('gift')}선물하기</button><button class="secondary-button" data-talk="${id}">${icon('chat')}대화하기</button></div><p class="favorite-note">좋아하는 선물 · ${ITEMS[fox.favorite].name} &nbsp;<span class="gift-heart">♥ +15</span></p></div></section>`);}
 function talk(id){const f=FOXES[id],before=state.affection[id];state.talkCounts[id]++;const gain=Date.now()-state.lastTalk[id]>=30000;if(gain){state.lastTalk[id]=Date.now();addAffinity(id,2);if(state.talkCounts[id]===1)log(`${f.name}와 숲 이야기를 나누었다.`,'heart');}const n=state.affection[id];const options=[...f.talks,...(n>=25?[f.close]:[]),...(n>=100?[f.best]:[])];persist();renderSidebar();openFox(id,options[(state.talkCounts[id]-1)%options.length]);if(gain&&n>before)toast(`${f.name}와 마음이 가까워졌어요 · 친밀도 +${n-before}`);else toast('이야기를 조금 더 나눠요. 마음도 천천히 자라나요.');}
@@ -196,10 +354,24 @@ $('#decorate-toggle').addEventListener('click',()=>switchView(view==='decorate'?
 $('#settings').addEventListener('click',settings);
 $('#inventory-book').addEventListener('click',()=>{category='items';switchView('collection');});
 $('#sound').addEventListener('click',toggleSound);
-$('#scene').addEventListener('pointerdown',e=>{if(e.button!==0||!e.target.closest('#world')||e.target.closest('button'))return;drag={startX:e.clientX,startY:e.clientY,x:camera.x,y:camera.y,moved:false};});
+$('#scene').addEventListener('pointerdown',e=>{if(e.button!==0||travelling||!e.target.closest('#world')||e.target.closest('button'))return;stopKeyboardMovement();drag={startX:e.clientX,startY:e.clientY,x:camera.x,y:camera.y,moved:false};});
 document.addEventListener('pointermove',e=>{if(!drag)return;const dx=e.clientX-drag.startX,dy=e.clientY-drag.startY;if(Math.hypot(dx,dy)>5)drag.moved=true;if(drag.moved){camera.x=drag.x+dx;camera.y=drag.y+dy;applyCamera();$('#world').classList.add('dragging');}});
 document.addEventListener('pointerup',()=>{if(!drag)return;suppressGroundClick=drag.moved;drag=null;$('#world').classList.remove('dragging');setTimeout(()=>{suppressGroundClick=false;},0);});
 $('#scene').addEventListener('click',e=>{if(suppressGroundClick||travelling||view==='decorate'||e.target.closest('button')||!e.target.closest('#world')||!selectedWalker)return;const r=$('#world').getBoundingClientRect(),x=(e.clientX-r.left)/r.width*100,y=(e.clientY-r.top)/r.height*100;if(!isGround(currentArea(),x,y)){toast('길이 있는 잔디 위를 눌러주세요.');return;}walkTo(selectedWalker,x,y);});
+document.addEventListener('keydown',e=>{
+ if(e.key==='Escape'&&selectedWalker&&!$('#dialog').open){e.preventDefault();clearWalkerSelection();return;}
+ if(!['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'].includes(e.key)||e.altKey||e.ctrlKey||e.metaKey)return;
+ if(e.target.closest?.('input,textarea,select,[contenteditable="true"],[role="textbox"]')||!keyboardMovementAllowed())return;
+ e.preventDefault();
+ if(!movementKeys.size&&!travelling)stopCharacterMotion(selectedWalker);
+ movementKeys.add(e.key);startKeyboardMovement();
+});
+document.addEventListener('keyup',e=>{
+ if(!movementKeys.has(e.key))return;e.preventDefault();movementKeys.delete(e.key);
+ if(!movementKeys.size)stopKeyboardMovement();
+});
+window.addEventListener('blur',stopKeyboardMovement);
+document.addEventListener('visibilitychange',()=>{if(document.hidden)stopKeyboardMovement();});
 window.addEventListener('resize',applyCamera);
 $('.brand').addEventListener('click',e=>{e.preventDefault();switchView('forest');});
 $('#dialog').addEventListener('click',e=>{if(e.target===$('#dialog')){const r=$('#dialog').getBoundingClientRect();if(e.clientX<r.left||e.clientX>r.right||e.clientY<r.top||e.clientY>r.bottom)closeModal();}});
@@ -221,5 +393,6 @@ function renderNavigation(){
  $$('#main-nav [data-view]').forEach(b=>{b.innerHTML=`<span class="nav-medallion">${pictures[b.dataset.view]}</span><span>${labels[b.dataset.view]}</span>`;});
 }
 hydrate();renderNavigation();renderWorld();renderCharacters();render();if(!recovery)persist();
+Object.keys(AREAS).forEach(area=>{preloadArea(area).catch(()=>{});});
 if(recovery){$('#save-status').textContent='저장 파일 확인 필요';$('#save-status').classList.add('save-warning');openModal(`<section class="modal">${closeButton()}<h2>저장된 숲을 확인해주세요</h2><p>이 브라우저의 저장 데이터를 읽지 못했어요. 저장 파일이 있다면 설정에서 불러올 수 있어요. 새로 시작하면 기존 브라우저 저장 내용이 바뀝니다.</p><div class="button-stack"><button class="primary-button" id="recovery-settings">저장 파일 불러오기</button><button class="secondary-button" data-action="reset-confirm">새 숲 시작하기</button></div></section>`);$('#recovery-settings').onclick=settings;}
 else if(!state.started)welcome();
