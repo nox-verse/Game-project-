@@ -1,0 +1,51 @@
+// Regression checks run the actual game functions with only visual effects stubbed.
+const vm = require('node:vm');
+const fs = require('node:fs');
+const assert = require('node:assert/strict');
+const source = fs.readFileSync(__dirname + '/dist/app.js', 'utf8').split("document.addEventListener('click',event=>")[0];
+const context = vm.createContext({console,assert,Date,setTimeout,clearInterval,document:{},localStorage:{getItem:()=>null}});
+vm.runInContext(source,context);
+vm.runInContext(`
+toast=()=>{};particle=()=>{};persist=()=>{};render=()=>{};renderSidebar=()=>{};renderDecor=()=>{};renderWorkbench=()=>{};renderNodes=()=>{};openFox=()=>{};closeModal=()=>{};chime=()=>{};
+state=FRESH();
+collect(0);collect(0);
+assert.equal(state.inventory.flower,1,'a harvested node cannot be collected twice');
+assert.equal(state.foundItems.length,1);
+assert.equal(state.stats.collected,1);
+state.inventory.berry=2;
+gift('red','berry');
+assert.equal(state.affection.red,15,'favorite gift grants 15');
+assert.equal(state.inventory.berry,1);
+state.inventory.leaf=1;
+gift('red','leaf');
+assert.equal(state.affection.red,23,'other gift grants 8');
+gift('red','leaf');
+assert.equal(state.affection.red,23,'empty inventory cannot be gifted');
+state.affection.red=95;gift('red','berry');
+assert.equal(state.affection.red,100,'friendship is capped');
+assert(state.memories.includes('red-100'),'best friend memory unlocks');
+state=FRESH();state.inventory={flower:3,berry:0,leaf:1};view='decorate';
+craft('flowerbed');
+assert.equal(state.stock.flowerbed,1);assert.equal(state.inventory.flower,0);assert.equal(state.inventory.leaf,0);
+assert(state.unlocked.includes('flowerbed'));
+craft('flowerbed');assert.equal(state.stock.flowerbed,1,'cannot craft without materials');
+clickSlot(0);assert.equal(state.stock.flowerbed,0);assert.equal(state.placed[0].slot,0);
+movingSlot=0;clickSlot(1);assert.equal(state.placed[0].slot,1,'move preserves the decoration');
+removeDecor(1);assert.equal(state.stock.flowerbed,1);assert.equal(state.placed.length,0);
+selectedKind='flowerbed';clickSlot(4);assert.equal(state.placed[0].slot,4);assert.equal(state.stock.flowerbed,0);
+assert.equal(JSON.stringify(validate(JSON.parse(JSON.stringify(state)))),JSON.stringify(state),'full save round-trips');
+for(const kind of Object.keys(DECOR)){state.inventory={flower:10,berry:10,leaf:10};const before=state.stock[kind];craft(kind);assert.equal(state.stock[kind],before+1);for(const [item,n] of Object.entries(DECOR[kind].cost))assert.equal(state.inventory[item],10-n);}
+const bad=JSON.parse(JSON.stringify(state));bad.inventory.flower=-1;assert.throws(()=>validate(bad));
+const badSlots=JSON.parse(JSON.stringify(state));badSlots.placed.push({...badSlots.placed[0]});assert.throws(()=>validate(badSlots));
+const badFriend=JSON.parse(JSON.stringify(state));badFriend.affection.arctic=101;assert.throws(()=>validate(badFriend));
+const badJournal=JSON.parse(JSON.stringify(state));badJournal.journal.push({text:'bad',icon:'injected',time:Date.now()});assert.throws(()=>validate(badJournal));
+state=FRESH();view='forest';
+for(const area of Object.keys(AREAS)){const positions=ensureNodes(area);assert.equal(positions.length,12);assert(positions.every(([x,y])=>isGround(area,x,y)),'collectibles stay on safe grass');}
+const first=JSON.stringify(state.nodePositions.home[0]);collect(0);const due=state.harvested[0];assert(respawnNodes(due+1));assert.notEqual(JSON.stringify(state.nodePositions.home[0]),first,'respawn chooses a new random position');assert.equal(state.harvested[0],undefined);
+assert.equal(JSON.stringify(validate(JSON.parse(JSON.stringify(state)))),JSON.stringify(state),'random positions survive save/load');
+state.met=['red','arctic','tibetan'];state.foundItems=['flower','leaf','berry'];state.unlocked=['flowerbed'];
+assert(catalog().includes('<strong>3마리</strong>'),'catalog counts animals only');assert(!catalog().includes('/ 11'),'no invented denominator');
+const legacy=JSON.parse(JSON.stringify(state));for(const k of ['characterLocations','currentArea','nodePositions','areaHarvested'])delete legacy[k];for(const k of ['rabbit','bear','deer','raccoon']){delete legacy.affection[k];delete legacy.talkCounts[k];delete legacy.lastTalk[k];}const migrated=validate(legacy);assert.equal(migrated.met.length,3);assert.equal(migrated.affection.red,state.affection.red);assert.equal(migrated.characterLocations.rabbit.area,'hill');assert.equal(migrated.affection.bear,0);
+state=FRESH();view='decorate';state.inventory={flower:10,leaf:10,berry:10};craft('flowerbed');clickSlot(0);state.currentArea='hill';craft('flowerbed');clickSlot(0);assert.equal(state.placed.length,2,'each area has its own decoration slots');removeDecor(0);assert.equal(state.placed.length,1);assert.equal(state.placed[0].area,'home','retrieval never removes a decoration in another area');validate(state);
+console.log('PASS: economy, friendship, all recipes, decoration movement/retrieval, independent areas, randomized respawn, safe spawn ground, animal-only catalog count, old-save migration and save validation.');
+`,context);

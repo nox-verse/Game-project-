@@ -1,0 +1,57 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#e7eed8"><meta name="description" content="작은 관심과 추억이 모여 완성되는 나만의 숲. 수집하고, 여우 친구들과 교류하며 숲을 꾸며보세요.">
+  <title>FOREST LOG — 나의 작은 숲</title>
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="storybook.css">
+  <link rel="stylesheet" href="world.css">
+</head>
+<body>
+  <header class="header">
+    <a class="brand" href="#forest" aria-label="포레스트 로그 나의 숲"><span class="brand-mark" data-icon="sprout"></span><span>FOREST LOG<small>포레스트 로그</small></span></a>
+    <div class="header-note" id="world-map" aria-label="숲 지도"></div>
+    <div class="header-end"><span class="save-status" id="save-status"><i></i>자동 저장됨</span><button class="icon-button settings-button" id="settings" aria-label="설정" data-icon="settings"></button></div>
+  </header>
+  <main>
+    <div class="page-heading"><div><span class="eyebrow">MY LITTLE SANCTUARY</span><h1 id="page-title">어서 와요, 나의 작은 숲에 <span class="heading-leaf" data-icon="leaf"></span></h1><p id="page-description">서두르지 않아도 괜찮아요. 오늘은 어떤 작은 추억을 만나게 될까요?</p></div><div class="weather"><span class="sun" data-icon="sun"></span><span>햇살 좋은 숲<small>마음이 쉬어가는 오후</small></span></div></div>
+    <div class="game-layout">
+      <section class="forest-column" aria-label="숲 게임">
+        <div class="scene-frame" id="scene-frame">
+          <div class="scene" id="scene">
+            <div class="world" id="world">
+            <img src="assets/forest-wide.webp" class="forest-background" alt="오두막과 연못이 있는 햇살 가득한 초록 숲" draggable="false">
+            <div class="scene-shade"></div>
+            <div id="collectibles"></div><div id="decoration-layer"></div><div id="characters"></div>
+            <div class="floating-leaf leaf-one"></div><div class="floating-leaf leaf-two"></div>
+            </div>
+            <div class="location-plaque"><span class="weather-medallion" data-icon="sun"></span><span id="area-title">햇살 숲<small>오늘도, 포근한 오후</small></span></div>
+            <section class="inventory" aria-label="보유 재료"><div class="inventory-label"><h2>나의 작은 주머니</h2></div><div class="resource-list" id="resources"></div><button class="inventory-book icon-button" id="inventory-book" aria-label="수집 도감 보기" data-icon="book"></button></section>
+            <button id="sound" class="sound-button" aria-label="숲 소리 켜기" title="숲 소리 켜기"><span data-icon="volume-off"></span></button>
+            <div class="scene-instruction" id="scene-instruction" hidden></div>
+            <div id="area-navigation" class="area-navigation"></div>
+            <div class="camera-controls" aria-label="숲 화면 조절"><button data-camera="out" aria-label="숲 축소">−</button><span id="camera-percent">71%</span><button data-camera="in" aria-label="숲 확대">+</button><button data-camera="reset" aria-label="숲 전체 보기">⌂</button></div>
+            <div id="walker-controls" class="walker-controls"></div>
+            <div class="scene-caption"><span class="little-dot"></span><span id="scene-caption">작은 반짝임을 눌러 숲의 선물을 모아보세요</span></div>
+            <div class="forest-label">FOREST LOG <span>·</span> YOUR OWN LITTLE WORLD</div>
+          </div>
+          <div class="scene-toolbar"><nav aria-label="주 메뉴" id="main-nav">
+            <button class="nav-button active" data-view="forest"><span data-icon="tree"></span>나의 숲</button>
+            <button class="nav-button" data-view="friends"><span data-icon="heart"></span>친구들</button>
+            <button class="nav-button" data-view="decorate"><span data-icon="chair"></span>꾸미기</button>
+            <button class="nav-button" data-view="collection"><span data-icon="book"></span>도감</button>
+            <button class="nav-button" data-view="journal"><span data-icon="pen"></span>숲 일기</button>
+          </nav><button class="text-button" id="decorate-toggle">숲 꾸미기<span data-icon="arrow"></span></button></div>
+        </div>
+        <div class="walk-status"><span data-icon="leaf"></span><strong id="mode-label">숲 산책 중</strong><span id="mode-hint">반짝이는 아이템과 친구들을 눌러보세요</span></div>
+        <section class="workbench" id="workbench" hidden></section>
+      </section>
+      <aside class="sidebar" id="sidebar"></aside>
+    </div>
+    <footer class="footer"><span><span data-icon="sprout"></span>작은 관심과 추억이 모여, 나만의 숲이 됩니다.</span><span>MADE OF LITTLE MOMENTS <span class="footer-heart">♡</span></span></footer>
+  </main>
+  <div id="toast-region" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+  <dialog id="dialog"><div id="dialog-content"></div></dialog>
+  <script type="module" src="app.js"></script>
+</body></html>

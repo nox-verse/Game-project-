@@ -1,0 +1,6 @@
+const http=require('http'),fs=require('fs'),path=require('path');
+const root=path.join(__dirname,'dist');
+function openGame(){if(process.argv.includes('--open')&&process.platform==='win32')require('child_process').execFile('rundll32.exe',['url.dll,FileProtocolHandler','http://127.0.0.1:8782/'],{windowsHide:true},()=>{});}
+const server=http.createServer((req,res)=>{let url;try{url=decodeURIComponent(req.url.split('?')[0]);}catch{res.writeHead(400);return res.end();}const file=path.resolve(root,'.'+(url==='/'?'/index.html':url));if(!file.startsWith(root+path.sep)){res.writeHead(403);return res.end();}fs.readFile(file,(e,data)=>{if(e){res.writeHead(404);return res.end('Not found');}res.setHeader('Content-Type',({'.html':'text/html; charset=utf-8','.js':'text/javascript; charset=utf-8','.css':'text/css; charset=utf-8','.png':'image/png','.webp':'image/webp'})[path.extname(file)]||'application/octet-stream');res.end(data);});});
+server.on('error',error=>{if(error.code==='EADDRINUSE'){console.log('게임 서버가 이미 켜져 있어요. http://127.0.0.1:8782/');openGame();}else{console.error(error.message);process.exitCode=1;}});
+server.listen(8782,'127.0.0.1',()=>{console.log('Local: http://127.0.0.1:8782/');openGame();});
